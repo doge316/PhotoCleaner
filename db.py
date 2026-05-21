@@ -113,3 +113,33 @@ def get_success_records():
     rows = cursor.fetchall()
     conn.close()
     return [{"input_path": row[0], "output_path": row[1], "created_at": row[2], "subject_count": row[3], "stray_count": row[4]} for row in rows]
+
+
+def get_recent_records(limit: int = 20):
+    """查询最近处理记录，返回列表，每个元素为字典。"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        SELECT input_path, output_path, status, error_message, elapsed_seconds, created_at, subject_count, stray_count
+        FROM processing_records
+        ORDER BY created_at DESC
+        LIMIT ?
+        ''',
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "input_path": row[0],
+            "output_path": row[1],
+            "status": row[2],
+            "error_message": row[3],
+            "elapsed_seconds": row[4],
+            "created_at": row[5],
+            "subject_count": row[6],
+            "stray_count": row[7],
+        }
+        for row in rows
+    ]

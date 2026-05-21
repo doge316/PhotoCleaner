@@ -2,11 +2,41 @@
 
 这是一个基于 YOLOv8 分割模型的路人消除辅助项目。它会先识别图片中的人物，再根据人物框的位置、面积和置信度，自动判断谁更像主体人物，谁更像路人，并生成对应的主体掩码和路人掩码，然后使用LaMa等修复模型进行消除和修复。
 
+## 新增前端
+
+项目新增了一个本地 Web 前端，支持：
+
+- 单张图片上传处理
+- 批量图片或目录扫描处理
+- 原图 / 结果图对比预览
+- 处理历史查看
+- 本地结果保存与日志记录
+
+前端入口：
+
+```bash
+streamlit run app.py
+```
+
+如果只想运行原始命令行脚本：
+
+```bash
+python yolo-analyzer.py
+```
+
+安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
 
 
 ## 目录结构
 
-- yolo-analyzer.py：主分析脚本
+- photo_cleaner_core.py：可复用的识别 / 消除核心逻辑
+- app.py：Streamlit 前端
+- yolo-analyzer.py：命令行入口
 - yolov8s-seg.pt：YOLOv8 模型（有权重）
 - 消除路人/训练集/：输入图片目录
 - 消除路人/结果集/：处理后的结果目录
