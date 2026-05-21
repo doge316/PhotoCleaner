@@ -80,11 +80,36 @@ def build_union_mask(masks: np.ndarray, indices: np.ndarray) -> np.ndarray:
 	return union_mask
 
 
+def remove_stray_people(image_bgr: np.ndarray, stray_mask: np.ndarray, inpaint_radius: int = 3) -> np.ndarray:
+	"""用 OpenCV 的修复算法直接消除路人。"""
+	if image_bgr.size == 0:
+		return image_bgr
+
+	if stray_mask.size == 0:
+		return image_bgr.copy()
+
+	image_h, image_w = image_bgr.shape[:2]
+	if stray_mask.shape[:2] != (image_h, image_w):
+		stray_mask = cv2.resize(
+			stray_mask.astype(np.float32),
+			(image_w, image_h),
+			interpolation=cv2.INTER_NEAREST,
+		)
+
+	mask_u8 = (stray_mask > 0).astype(np.uint8) * 255
+	if np.count_nonzero(mask_u8) == 0:
+		return image_bgr.copy()
+
+	return cv2.inpaint(image_bgr, mask_u8, inpaint_radius, cv2.INPAINT_TELEA)
+
+
 # 加载分割模型
 model = YOLO("yolov8s-seg.pt")
 
+input_image_path = "./消除路人/训练集/test1.png"
+
 # 只检测 person 类别（COCO 里 person 的类别 id = 0）
-results = model("./消除路人/训练集/test1.png", classes=[0], save=True, show=True)
+results = model(input_image_path, classes=[0], save=True, show=True)
 
 # model(...) 返回的是列表；如果输入一张图片，列表里通常只有一个 Results
 res: Results = results[0]
@@ -150,9 +175,16 @@ stray_indices = np.setdiff1d(all_indices, subject_indices)
 subject_mask = build_union_mask(masks, subject_indices)
 stray_mask = build_union_mask(masks, stray_indices)
 
+# 直接把路人区域修复掉，得到最终消除结果
+cleaned_image = remove_stray_people(res.orig_img, stray_mask, inpaint_radius=3)
+
 # 输出分析结果，方便观察当前规则是否合理
 print(f"一共检测到 {len(xyxy)} 个人")
 print("每个人的框坐标：")
+
+
+
+
 for i, box in enumerate(xyxy):
 	print(
 		f"  {i}: box={box.tolist()}, conf={float(conf[i]):.3f}, "
@@ -171,8 +203,11 @@ print(f"路人索引：{stray_indices.tolist()}")
 
 
 #输出掩码图，白色部分是对应的区域
-cv2.imwrite("./mask/subject_mask.png", (subject_mask * 255).astype(np.uint8))
-cv2.imwrite("./mask/stray_mask.png", (stray_mask * 255).astype(np.uint8))
+# cv2.imwrite("./mask/subject_mask.png", (subject_mask * 255).astype(np.uint8))
+# cv2.imwrite("./mask/stray_mask.png", (stray_mask * 255).astype(np.uint8))
+
+
+cv2.imwrite("./mask/test1_removed.png", cleaned_image)
 
 
 
