@@ -4,7 +4,10 @@ import numpy as np
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 import cv2
+import time
 
+# 数据库模块
+from db import init_db, is_image_processed, insert_record, get_failed_records, get_success_records
 
 # 这个脚本的目标：
 # 1. 找出图片中的所有人物
@@ -101,6 +104,13 @@ def remove_stray_people(image_bgr: np.ndarray, stray_mask: np.ndarray, inpaint_r
 		return image_bgr.copy()
 
 	return cv2.inpaint(image_bgr, mask_u8, inpaint_radius, cv2.INPAINT_TELEA)
+
+
+# 初始化数据库
+init_db()
+
+# 记录开始时间，后续可以计算处理耗时
+start_time = time.time()
 
 
 # 加载分割模型
@@ -206,6 +216,27 @@ print(f"路人索引：{stray_indices.tolist()}")
 # cv2.imwrite("./mask/subject_mask.png", (subject_mask * 255).astype(np.uint8))
 # cv2.imwrite("./mask/stray_mask.png", (stray_mask * 255).astype(np.uint8))
 
+
+# 处理完成后，插入记录
+try:
+
+    # 处理结束后计算耗时
+	end_time = time.time()
+	elapsed = end_time - start_time
+
+    # 调用 insert_record
+	insert_record(
+        input_path=input_image_path,                    # 输入图片路径
+        output_path="./mask/test1_removed.png",         # 输出图片路径
+        subject_count=len(subject_indices),             # 主体人物数量
+        stray_count=len(stray_indices),                 # 路人数量
+        status="success",                               # 处理状态
+        error_message="",                               # 没有错误就留空
+        elapsed=elapsed                                 # 如果要计时就记录时间
+    )
+	print("记录已保存到数据库")
+except Exception as e:
+    print(f"保存记录失败: {e}")
 
 cv2.imwrite("./mask/test1_removed.png", cleaned_image)
 
