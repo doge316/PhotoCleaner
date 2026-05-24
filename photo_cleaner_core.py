@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from importlib import import_module
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Iterable
 
 import cv2
 import numpy as np
+from PIL import Image
 from ultralytics import YOLO
 
 from db import init_db, insert_record
@@ -78,7 +80,19 @@ def build_union_mask(masks: np.ndarray, indices: np.ndarray) -> np.ndarray:
     return union_mask
 
 
-def remove_stray_people(image_bgr: np.ndarray, stray_mask: np.ndarray, inpaint_radius: int = 3) -> np.ndarray:
+@lru_cache(maxsize=1)
+def load_lama_model():
+    try:
+        simple_lama_module = import_module("simple_lama_inpainting")
+    except ImportError as exc:
+        raise ImportError(
+            "LaMa 后端不可用，请先安装 simple-lama-inpainting"
+        ) from exc
+
+    return simple_lama_module.SimpleLama()
+
+
+def remove_stray_people_lama(image_bgr: np.ndarray, stray_mask: np.ndarray) -> np.ndarray:
     if image_bgr.size == 0:
         return image_bgr
 
@@ -97,7 +111,39 @@ def remove_stray_people(image_bgr: np.ndarray, stray_mask: np.ndarray, inpaint_r
     if np.count_nonzero(mask_u8) == 0:
         return image_bgr.copy()
 
-    return cv2.inpaint(image_bgr, mask_u8, inpaint_radius, cv2.INPAINT_TELEA)
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_pil = Image.fromarray(image_rgb)
+    mask_pil = Image.fromarray(mask_u8, mode="L")
+
+    lama = load_lama_model()
+    result_pil = lama(image_pil, mask_pil)
+    result_rgb = np.array(result_pil.convert("RGB"), dtype=np.uint8)
+    return cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+
+
+def remove_stray_people(
+    image_bgr: np.ndarray,
+    stray_mask: np.ndarray,
+) -> np.ndarray:
+    if image_bgr.size == 0:
+        return image_bgr
+
+    if stray_mask.size == 0:
+        return image_bgr.copy()
+
+    image_h, image_w = image_bgr.shape[:2]
+    if stray_mask.shape[:2] != (image_h, image_w):
+        stray_mask = cv2.resize(
+            stray_mask.astype(np.float32),
+            (image_w, image_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    mask_u8 = (stray_mask > 0).astype(np.uint8) * 255
+    if np.count_nonzero(mask_u8) == 0:
+        return image_bgr.copy()
+
+    return remove_stray_people_lama(image_bgr, stray_mask)
 
 
 @lru_cache(maxsize=1)
@@ -110,7 +156,6 @@ def analyze_image(
     model_path: str = "yolov8s-seg.pt",
     subject_score_ratio: float = 0.75,
     min_area_ratio: float = 0.03,
-    inpaint_radius: int = 3,
 ) -> ProcessResult:
     init_db()
 
@@ -178,7 +223,10 @@ def analyze_image(
 
     subject_mask = build_union_mask(masks, subject_indices)
     stray_mask = build_union_mask(masks, stray_indices)
-    cleaned_image = remove_stray_people(original_bgr, stray_mask, inpaint_radius=inpaint_radius)
+    cleaned_image = remove_stray_people(
+        original_bgr,
+        stray_mask,
+    )
 
     elapsed_seconds = time.time() - start_time
     detections = [
@@ -249,7 +297,6 @@ def process_image(
     model_path: str = "yolov8s-seg.pt",
     subject_score_ratio: float = 0.75,
     min_area_ratio: float = 0.03,
-    inpaint_radius: int = 3,
     save_masks: bool = True,
 ) -> tuple[ProcessResult, dict[str, Path]]:
     start_time = time.time()
@@ -259,7 +306,6 @@ def process_image(
             model_path=model_path,
             subject_score_ratio=subject_score_ratio,
             min_area_ratio=min_area_ratio,
-            inpaint_radius=inpaint_radius,
         )
         saved_paths = save_result(result, output_dir=output_dir, save_masks=save_masks)
 
@@ -308,7 +354,6 @@ def process_batch(
     model_path: str = "yolov8s-seg.pt",
     subject_score_ratio: float = 0.75,
     min_area_ratio: float = 0.03,
-    inpaint_radius: int = 3,
     save_masks: bool = True,
 ) -> list[tuple[Path, ProcessResult | None, str | None]]:
     results: list[tuple[Path, ProcessResult | None, str | None]] = []
@@ -321,7 +366,6 @@ def process_batch(
                 model_path=model_path,
                 subject_score_ratio=subject_score_ratio,
                 min_area_ratio=min_area_ratio,
-                inpaint_radius=inpaint_radius,
                 save_masks=save_masks,
             )
             results.append((path, result, None))
@@ -347,7 +391,11 @@ def run_cli(
     path = Path(input_path)
     if path.is_dir():
         image_paths = collect_images(path)
-        batch_results = process_batch(image_paths, output_dir=output_dir, model_path=model_path)
+        batch_results = process_batch(
+            image_paths,
+            output_dir=output_dir,
+            model_path=model_path,
+        )
         print(f"共处理 {len(batch_results)} 张图片")
         for item_path, result, error in batch_results:
             if result is None:
@@ -355,7 +403,11 @@ def run_cli(
                 continue
             print(f"成功: {item_path} -> {result.output_path}")
     else:
-        result, saved_paths = process_image(input_path, output_dir=output_dir, model_path=model_path)
+        result, saved_paths = process_image(
+            input_path,
+            output_dir=output_dir,
+            model_path=model_path,
+        )
         print(f"处理完成: {input_path}")
         print(f"输出路径: {saved_paths['output']}")
         print(f"主体数量: {result.subject_count} | 路人数量: {result.stray_count}")

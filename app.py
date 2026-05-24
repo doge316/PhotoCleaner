@@ -174,7 +174,7 @@ def render_hero() -> None:
             </p>
             <div class="feature-grid">
                 <div class="feature-card"><div class="label">输入格式</div><div class="value">PNG / JPG / JPEG</div></div>
-                <div class="feature-card"><div class="label">AI 核心</div><div class="value">YOLOv8-seg + OpenCV 修复</div></div>
+                <div class="feature-card"><div class="label">AI 核心</div><div class="value">YOLOv8-seg + LaMa 修复</div></div>
                 <div class="feature-card"><div class="label">处理方式</div><div class="value">单张 / 批量 / 目录扫描</div></div>
                 <div class="feature-card"><div class="label">存储方式</div><div class="value">本地输出 + SQLite 日志</div></div>
             </div>
@@ -188,7 +188,6 @@ def sidebar_settings() -> dict[str, object]:
     st.sidebar.markdown("### 处理参数")
     model_path = st.sidebar.text_input("模型路径", value="yolov8s-seg.pt")
     output_dir = st.sidebar.text_input("结果输出目录", value="消除路人/结果集")
-    inpaint_radius = st.sidebar.slider("修复半径", 1, 15, 3)
     subject_score_ratio = st.sidebar.slider("主体保留阈值", 0.5, 0.95, 0.75, 0.01)
     min_area_ratio = st.sidebar.slider("最小人物面积占比", 0.01, 0.10, 0.03, 0.005)
     save_masks = st.sidebar.checkbox("同时保存 mask", value=True)
@@ -197,7 +196,6 @@ def sidebar_settings() -> dict[str, object]:
     return {
         "model_path": model_path,
         "output_dir": output_dir,
-        "inpaint_radius": inpaint_radius,
         "subject_score_ratio": subject_score_ratio,
         "min_area_ratio": min_area_ratio,
         "save_masks": save_masks,
@@ -269,7 +267,6 @@ def handle_single_mode(settings: dict[str, object]) -> None:
             model_path=settings["model_path"],
             subject_score_ratio=float(settings["subject_score_ratio"]),
             min_area_ratio=float(settings["min_area_ratio"]),
-            inpaint_radius=int(settings["inpaint_radius"]),
             save_masks=bool(settings["save_masks"]),
         )
 
@@ -334,7 +331,6 @@ def run_batch(candidates: list[Path], settings: dict[str, object]) -> None:
                 model_path=settings["model_path"],
                 subject_score_ratio=float(settings["subject_score_ratio"]),
                 min_area_ratio=float(settings["min_area_ratio"]),
-                inpaint_radius=int(settings["inpaint_radius"]),
                 save_masks=bool(settings["save_masks"]),
             )
             success_count += 1
