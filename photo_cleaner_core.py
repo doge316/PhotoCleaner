@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# 强制使用 CPU，必须在导入 torch 相关库之前设置
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import time
 from importlib import import_module
 from dataclasses import dataclass
@@ -10,6 +14,18 @@ from typing import Iterable
 import cv2
 import numpy as np
 from PIL import Image
+
+# 在导入 ultralytics 之前，先强制 torch 使用 CPU
+import torch
+torch.cuda.is_available = lambda: False  # 强制覆盖，让所有 GPU 检查返回 False
+
+# 补丁 torch.jit.load，强制使用 CPU
+_original_jit_load = torch.jit.load
+def _patched_jit_load(*args, **kwargs):
+    kwargs.setdefault('map_location', 'cpu')
+    return _original_jit_load(*args, **kwargs)
+torch.jit.load = _patched_jit_load
+
 from ultralytics import YOLO
 
 from db import init_db, insert_record
@@ -155,7 +171,7 @@ def analyze_image(
     image_path: str | Path,
     model_path: str = "yolov8s-seg.pt",
     subject_score_ratio: float = 0.75,
-    min_area_ratio: float = 0.03,
+    min_area_ratio: float = 0.01,#降低最小面积阈值 - 检测更小的远处人物
 ) -> ProcessResult:
     init_db()
 
@@ -171,7 +187,45 @@ def analyze_image(
         raise ValueError(f"无法读取图片: {image_path}")
 
     model = load_model(model_path)
-    results = model(str(image_path), classes=[0], verbose=False)
+    results = model(str(image_path), classes=[0],conf=0.05,verbose=False)#conf降低置信度阈值 - 检出更多模糊人物
+
+
+
+    res = results[0]
+    image_h, image_w = res.orig_shape
+    boxes = res.boxes
+    xyxy = boxes.xyxy.cpu().numpy() if boxes is not None else np.empty((0, 4), dtype=np.float32)
+    conf = boxes.conf.cpu().numpy() if boxes is not None else np.empty((0,), dtype=np.float32)
+    masks = res.masks.data.cpu().numpy() if res.masks is not None else np.array([])
+
+    # 多尺度检测：放大图片检测小人物（如果原图没有检测到足够的人）
+    if len(xyxy) < 20 and image_h * image_w > 100000:  # 如果原图检测少于3人且图片足够大
+        try:
+            large_h, large_w = int(image_h * 1.5), int(image_w * 1.5)
+            large_image = cv2.resize(original_bgr, (large_w, large_h))
+            large_results = model(large_image, classes=[0], conf=0.15, verbose=False)
+            
+            if large_results and large_results[0].masks is not None:
+                scale_x = image_w / large_w
+                scale_y = image_h / large_h
+                large_masks = large_results[0].masks.data.cpu().numpy()
+                
+                resized_masks = []
+                for mask in large_masks:
+                    resized_mask = cv2.resize(mask, (image_w, image_h))
+                    resized_masks.append(resized_mask.astype(bool))
+                large_masks_resized = np.array(resized_masks)
+                
+                # 合并检测结果
+                if len(masks) > 0:
+                    masks = np.concatenate([masks, large_masks_resized], axis=0)
+                else:
+                    masks = large_masks_resized
+        except Exception:
+            pass  # 多尺度检测失败不影响主流程
+
+
+            
     if not results:
         raise RuntimeError("模型没有返回任何结果")
 
