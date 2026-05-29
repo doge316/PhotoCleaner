@@ -17,6 +17,7 @@ class LLMSelectionConfig:
     model: str = "gpt-4o-mini"
     api_key: str = ""
     timeout_seconds: int = 90
+    request_mode: str = "auto"
 
 
 def image_to_data_url(image_bgr: np.ndarray) -> str:
@@ -79,24 +80,55 @@ def parse_llm_indices(text: str, total_count: int) -> list[int]:
     raise ValueError(f"无法解析模型返回的主体编号: {text}")
 
 
+def should_use_vision(config: LLMSelectionConfig) -> bool:
+    mode = config.request_mode.lower().strip()
+    if mode == "vision":
+        return True
+    if mode == "text":
+        return False
+
+    haystack = f"{config.base_url} {config.model}".lower()
+    if "deepseek" in haystack:
+        return False
+    return True
+
+
+def build_prompt(detections: list[dict[str, object]], use_vision: bool) -> str:
+    intro = (
+        "请根据原图和编号框图判断哪些人物应该保留，通常保留的是拍摄主体、最重要的人物、"
+        "以及明确属于同一主体群体的人。\n"
+        if use_vision
+        else "请根据候选人物的编号、位置、面积和置信度判断哪些人物应该保留，通常保留的是拍摄主体、最重要的人物、以及明确属于同一主体群体的人。\n"
+    )
+
+    return (
+        "你是照片主体选择器。图中每个检测框都标了编号。\n"
+        + intro
+        + "只返回 JSON，不要输出多余文字。格式必须是："
+        "{\"subject_indices\":[0,2]}\n"
+        "要求：\n"
+        "1. subject_indices 只允许包含整数编号。\n"
+        "2. 如果只有一个主要人物，就只返回那一个编号。\n"
+        "3. 如果多个检测框都属于同一组主体，可以全部返回。\n"
+        "4. 不要返回解释。\n"
+        "候选人物信息：\n"
+        + "\n".join(
+            [
+                f'#{item["index"]}: box={item["box"]}, conf={item["conf"]:.3f}, area={item["area"]:.0f}'
+                for item in detections
+            ]
+        )
+    )
+
+
 def call_openai_compatible_vision_model(
     image_bgr: np.ndarray,
     overlay_bgr: np.ndarray,
     detections: list[dict[str, object]],
     config: LLMSelectionConfig,
 ) -> tuple[list[int], str]:
-    prompt = (
-        "你是照片主体选择器。图中每个检测框都标了编号。\n"
-        "请根据原图和编号框图判断哪些人物应该保留，通常保留的是拍摄主体、最重要的人物、"
-        "以及明确属于同一主体群体的人。\n"
-        "只返回 JSON，不要输出多余文字。格式必须是："
-        "{\"subject_indices\":[0,2]}\n"
-        "要求：\n"
-        "1. subject_indices 只允许包含整数编号。\n"
-        "2. 如果只有一个主要人物，就只返回那一个编号。\n"
-        "3. 如果多个检测框都属于同一组主体，可以全部返回。\n"
-        "4. 不要返回解释。"
-    )
+    use_vision = should_use_vision(config)
+    prompt = build_prompt(detections, use_vision=use_vision)
 
     payload: dict[str, Any] = {
         "model": config.model,
@@ -110,18 +142,14 @@ def call_openai_compatible_vision_model(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_to_data_url(image_bgr)}},
-                    {"type": "image_url", "image_url": {"url": image_to_data_url(overlay_bgr)}},
-                    {
-                        "type": "text",
-                        "text": "候选人物信息：\n"
-                        + "\n".join(
-                            [
-                                f'#{item["index"]}: box={item["box"]}, conf={item["conf"]:.3f}, area={item["area"]:.0f}'
-                                for item in detections
-                            ]
-                        ),
-                    },
+                    *(
+                        [
+                            {"type": "image_url", "image_url": {"url": image_to_data_url(image_bgr)}},
+                            {"type": "image_url", "image_url": {"url": image_to_data_url(overlay_bgr)}},
+                        ]
+                        if use_vision
+                        else []
+                    ),
                 ],
             },
         ],
@@ -142,6 +170,12 @@ def call_openai_compatible_vision_model(
     try:
         with urllib_request.urlopen(request, timeout=config.timeout_seconds) as response:
             response_text = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        details = f"HTTP {exc.code} {exc.reason}"
+        if error_text:
+            details = f"{details}: {error_text}"
+        raise RuntimeError(f"调用大模型失败: {details}") from exc
     except urllib_error.URLError as exc:
         raise RuntimeError(f"调用大模型失败: {exc}") from exc
 

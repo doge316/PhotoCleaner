@@ -191,6 +191,7 @@ def sidebar_settings() -> dict[str, object]:
     llm_base_url = st.sidebar.text_input("大模型接口地址", value="http://localhost:11434/v1")
     llm_model = st.sidebar.text_input("大模型名称", value="gpt-4o-mini")
     llm_api_key = st.sidebar.text_input("大模型 API Key", value="", type="password")
+    llm_request_mode = st.sidebar.selectbox("请求模式", options=["auto", "vision", "text"], index=0)
     save_masks = st.sidebar.checkbox("同时保存 mask", value=True)
     st.sidebar.caption("主体保留完全由大模型判断。")
 
@@ -201,6 +202,7 @@ def sidebar_settings() -> dict[str, object]:
             base_url=llm_base_url,
             model=llm_model,
             api_key=llm_api_key,
+            request_mode=llm_request_mode,
         ),
         "save_masks": save_masks,
     }

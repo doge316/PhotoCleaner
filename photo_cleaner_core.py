@@ -29,7 +29,7 @@ torch.jit.load = _patched_jit_load
 from ultralytics import YOLO
 
 from db import init_db, insert_record
-from llm_subject_selector import LLMSelectionConfig, select_subject_indices
+from llm_subject_selector import LLMSelectionConfig, llm_subject_select
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
@@ -246,7 +246,7 @@ def analyze_image(
         for i in range(len(xyxy))
     ]
 
-    subject_indices, selector_logs = select_subject_indices(
+    subject_indices, selector_logs = llm_subject_select(
         image_bgr=original_bgr,
         detections=detections,
         llm_config=llm_config,
