@@ -29,7 +29,6 @@ torch.jit.load = _patched_jit_load
 from ultralytics import YOLO
 
 from db import init_db, insert_record
-from llm_subject_selector import LLMSelectionConfig, select_subject_indices
 
 SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
@@ -63,6 +62,28 @@ class ProcessResult:
 
 def is_supported_image(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def compute_subject_score(box: np.ndarray, image_w: int, image_h: int, conf: float) -> float:
+    x1, y1, x2, y2 = box
+
+    box_area = max(0.0, (x2 - x1) * (y2 - y1))
+    image_area = float(image_w * image_h)
+    area_score = box_area / image_area if image_area > 0 else 0.0
+
+    box_cx = (x1 + x2) / 2.0
+    box_cy = (y1 + y2) / 2.0
+    image_cx = image_w / 2.0
+    image_cy = image_h / 2.0
+
+    center_dist = np.sqrt((box_cx - image_cx) ** 2 + (box_cy - image_cy) ** 2)
+    max_dist = np.sqrt(image_cx**2 + image_cy**2)
+    center_score = 1.0 - (center_dist / max_dist if max_dist > 0 else 0.0)
+    center_score = float(np.clip(center_score, 0.0, 1.0))
+
+    conf_score = float(np.clip(conf, 0.0, 1.0))
+
+    return float(0.45 * area_score + 0.35 * center_score + 0.20 * conf_score)
 
 
 def build_union_mask(masks: np.ndarray, indices: np.ndarray) -> np.ndarray:
@@ -151,7 +172,6 @@ def analyze_image(
     model_path: str = "yolov8s-seg.pt",
     subject_score_ratio: float = 0.75,
     min_area_ratio: float = 0.01,#降低最小面积阈值 - 检测更小的远处人物
-    llm_config: LLMSelectionConfig | None = None,
 ) -> ProcessResult:
     init_db()
 
@@ -236,21 +256,21 @@ def analyze_image(
         )
         return result
 
-    detections = [
-        {
-            "index": i,
-            "box": xyxy[i].tolist(),
-            "conf": float(conf[i]),
-            "area": float((xyxy[i, 2] - xyxy[i, 0]) * (xyxy[i, 3] - xyxy[i, 1])),
-        }
-        for i in range(len(xyxy))
-    ]
-
-    subject_indices, selector_logs = select_subject_indices(
-        image_bgr=original_bgr,
-        detections=detections,
-        llm_config=llm_config,
+    scores = np.array(
+        [compute_subject_score(xyxy[i], image_w, image_h, float(conf[i])) for i in range(len(xyxy))],
+        dtype=np.float32,
     )
+
+    main_idx = int(np.argmax(scores))
+    main_score = float(scores[main_idx])
+    subject_indices = np.where(scores >= main_score * subject_score_ratio)[0]
+
+    areas = (xyxy[:, 2] - xyxy[:, 0]) * (xyxy[:, 3] - xyxy[:, 1])
+    area_keep = np.where(areas >= image_w * image_h * min_area_ratio)[0]
+    subject_indices = np.intersect1d(subject_indices, area_keep)
+
+    if len(subject_indices) == 0:
+        subject_indices = np.array([main_idx], dtype=int)
 
     all_indices = np.arange(len(xyxy))
     stray_indices = np.setdiff1d(all_indices, subject_indices)
@@ -263,20 +283,22 @@ def analyze_image(
     )
 
     elapsed_seconds = time.time() - start_time
-    subject_index_set = set(subject_indices.tolist())
-    detections_summary = [
+    detections = [
         DetectionSummary(
             index=i,
             box=xyxy[i].tolist(),
             conf=float(conf[i]),
-            score=1.0 if i in subject_index_set else 0.0,
-            area=float((xyxy[i, 2] - xyxy[i, 0]) * (xyxy[i, 3] - xyxy[i, 1])),
+            score=float(scores[i]),
+            area=float(areas[i]),
             label="subject" if i in subject_indices else "stray",
         )
         for i in range(len(xyxy))
     ]
 
-    logs = selector_logs + [f"检测到 {len(xyxy)} 个人物，主体 {len(subject_indices)} 个，路人 {len(stray_indices)} 个。"]
+    logs = [
+        f"检测到 {len(xyxy)} 个人物，主体 {len(subject_indices)} 个，路人 {len(stray_indices)} 个。",
+        f"主主体分数: {main_score:.3f}",
+    ]
 
     return ProcessResult(
         input_path=str(image_path),
@@ -288,7 +310,7 @@ def analyze_image(
         cleaned_bgr=cleaned_image,
         subject_mask=subject_mask,
         stray_mask=stray_mask,
-        detections=detections_summary,
+        detections=detections,
         logs=logs,
     )
 
@@ -327,7 +349,8 @@ def process_image(
     image_path: str | Path,
     output_dir: str | Path,
     model_path: str = "yolov8s-seg.pt",
-    llm_config: LLMSelectionConfig | None = None,
+    subject_score_ratio: float = 0.75,
+    min_area_ratio: float = 0.03,
     save_masks: bool = True,
 ) -> tuple[ProcessResult, dict[str, Path]]:
     start_time = time.time()
@@ -335,7 +358,8 @@ def process_image(
         result = analyze_image(
             image_path=image_path,
             model_path=model_path,
-            llm_config=llm_config,
+            subject_score_ratio=subject_score_ratio,
+            min_area_ratio=min_area_ratio,
         )
         saved_paths = save_result(result, output_dir=output_dir, save_masks=save_masks)
 
@@ -382,7 +406,8 @@ def process_batch(
     image_paths: Iterable[str | Path],
     output_dir: str | Path,
     model_path: str = "yolov8s-seg.pt",
-    llm_config: LLMSelectionConfig | None = None,
+    subject_score_ratio: float = 0.75,
+    min_area_ratio: float = 0.03,
     save_masks: bool = True,
 ) -> list[tuple[Path, ProcessResult | None, str | None]]:
     results: list[tuple[Path, ProcessResult | None, str | None]] = []
@@ -393,7 +418,8 @@ def process_batch(
                 image_path=path,
                 output_dir=output_dir,
                 model_path=model_path,
-                llm_config=llm_config,
+                subject_score_ratio=subject_score_ratio,
+                min_area_ratio=min_area_ratio,
                 save_masks=save_masks,
             )
             results.append((path, result, None))
@@ -406,7 +432,7 @@ def format_detection_lines(detections: list[DetectionSummary]) -> list[str]:
     lines: list[str] = []
     for item in detections:
         lines.append(
-            f"#{item.index} {item.label} | conf={item.conf:.3f} | keep={int(item.score > 0)} | area={item.area:.0f}"
+            f"#{item.index} {item.label} | conf={item.conf:.3f} | score={item.score:.3f} | area={item.area:.0f}"
         )
     return lines
 
@@ -415,7 +441,6 @@ def run_cli(
     input_path: str,
     output_dir: str,
     model_path: str = "yolov8s-seg.pt",
-    llm_config: LLMSelectionConfig | None = None,
 ) -> None:
     path = Path(input_path)
     if path.is_dir():
@@ -424,7 +449,6 @@ def run_cli(
             image_paths,
             output_dir=output_dir,
             model_path=model_path,
-            llm_config=llm_config,
         )
         print(f"共处理 {len(batch_results)} 张图片")
         for item_path, result, error in batch_results:
@@ -437,7 +461,6 @@ def run_cli(
             input_path,
             output_dir=output_dir,
             model_path=model_path,
-            llm_config=llm_config,
         )
         print(f"处理完成: {input_path}")
         print(f"输出路径: {saved_paths['output']}")

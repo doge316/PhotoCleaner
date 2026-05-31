@@ -35,7 +35,6 @@ pip install -r requirements.txt
 ## 目录结构
 
 - photo_cleaner_core.py：可复用的识别 / 消除核心逻辑
-- llm_subject_selector.py：单独放置的主体判断大模型逻辑
 - app.py：Streamlit 前端
 - yolo-analyzer.py：命令行入口
 - yolov8s-seg.pt：YOLOv8 模型（有权重）

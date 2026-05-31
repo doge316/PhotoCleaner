@@ -8,7 +8,7 @@ import numpy as np
 import streamlit as st
 
 from db import get_failed_records, get_recent_records, get_success_records, init_db
-from photo_cleaner_core import LLMSelectionConfig, collect_images, format_detection_lines, process_image
+from photo_cleaner_core import collect_images, format_detection_lines, process_image
 
 
 st.set_page_config(
@@ -188,20 +188,16 @@ def sidebar_settings() -> dict[str, object]:
     st.sidebar.markdown("### 处理参数")
     model_path = st.sidebar.text_input("模型路径", value="yolov8s-seg.pt")
     output_dir = st.sidebar.text_input("结果输出目录", value="消除路人/结果集")
-    llm_base_url = st.sidebar.text_input("大模型接口地址", value="http://localhost:11434/v1")
-    llm_model = st.sidebar.text_input("大模型名称", value="gpt-4o-mini")
-    llm_api_key = st.sidebar.text_input("大模型 API Key", value="", type="password")
+    subject_score_ratio = st.sidebar.slider("主体保留阈值", 0.5, 0.95, 0.75, 0.01)
+    min_area_ratio = st.sidebar.slider("最小人物面积占比", 0.01, 0.10, 0.03, 0.005)
     save_masks = st.sidebar.checkbox("同时保存 mask", value=True)
-    st.sidebar.caption("主体保留完全由大模型判断。")
+    st.sidebar.caption("建议先使用默认值，再根据拍照风格微调。")
 
     return {
         "model_path": model_path,
         "output_dir": output_dir,
-        "llm_config": LLMSelectionConfig(
-            base_url=llm_base_url,
-            model=llm_model,
-            api_key=llm_api_key,
-        ),
+        "subject_score_ratio": subject_score_ratio,
+        "min_area_ratio": min_area_ratio,
         "save_masks": save_masks,
     }
 
@@ -269,7 +265,8 @@ def handle_single_mode(settings: dict[str, object]) -> None:
             image_path=temp_path,
             output_dir=settings["output_dir"],
             model_path=settings["model_path"],
-            llm_config=settings["llm_config"],
+            subject_score_ratio=float(settings["subject_score_ratio"]),
+            min_area_ratio=float(settings["min_area_ratio"]),
             save_masks=bool(settings["save_masks"]),
         )
 
@@ -332,7 +329,8 @@ def run_batch(candidates: list[Path], settings: dict[str, object]) -> None:
                 image_path=image_path,
                 output_dir=settings["output_dir"],
                 model_path=settings["model_path"],
-                llm_config=settings["llm_config"],
+                subject_score_ratio=float(settings["subject_score_ratio"]),
+                min_area_ratio=float(settings["min_area_ratio"]),
                 save_masks=bool(settings["save_masks"]),
             )
             success_count += 1
