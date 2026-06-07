@@ -192,7 +192,20 @@ def sidebar_settings() -> dict[str, object]:
     llm_model = st.sidebar.text_input("大模型名称", value="gpt-4o-mini")
     llm_api_key = st.sidebar.text_input("大模型 API Key", value="", type="password")
     save_masks = st.sidebar.checkbox("同时保存 mask", value=True)
-    st.sidebar.caption("主体保留完全由大模型判断。")
+
+    # 注释：新增的多维度特征开关
+    st.sidebar.markdown("### 多维度特征开关")
+    enable_depth = st.sidebar.checkbox(
+        "启用深度估算（MiDaS）",
+        value=True,
+        help="离镜头越近的人越像主体。需要 torch，首次加载约 1-2 秒。",
+    )
+    enable_face = st.sidebar.checkbox(
+        "启用脸部检测（YuNet）",
+        value=True,
+        help="有人脸完整可见的人更可能是主体。首次使用会下载 ~340KB 模型。",
+    )
+    st.sidebar.caption("开启后，规则判断将同时考虑：位置/面积、深度、脸部完整度、人物完整度、置信度。")
 
     return {
         "model_path": model_path,
@@ -201,6 +214,8 @@ def sidebar_settings() -> dict[str, object]:
             base_url=llm_base_url,
             model=llm_model,
             api_key=llm_api_key,
+            enable_depth=enable_depth,
+            enable_face=enable_face,
         ),
         "save_masks": save_masks,
     }
@@ -229,6 +244,13 @@ def show_result(result, saved_paths: dict[str, Path]) -> None:
     else:
         st.info("未检测到人物，系统已输出原图。")
 
+    # 注释：把 5 维度打分的判断日志也展示出来
+    if result.logs:
+        with st.expander("查看判断日志", expanded=False):
+            for log in result.logs:
+                st.write(log)
+
+                
     st.download_button(
         label="下载处理结果",
         data=image_to_bytes(result.cleaned_bgr),

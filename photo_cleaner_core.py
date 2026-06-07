@@ -264,6 +264,7 @@ def analyze_image(
     subject_indices, selector_logs = select_subject_indices(
         image_bgr=original_bgr,
         detections=detections,
+        masks=masks if masks is not None and masks.size > 0 else None,
         llm_config=llm_config,
     )
 
