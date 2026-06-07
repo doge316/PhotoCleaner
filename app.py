@@ -188,7 +188,7 @@ def sidebar_settings() -> dict[str, object]:
     st.sidebar.markdown("### 处理参数")
     model_path = st.sidebar.text_input("模型路径", value="yolov8s-seg.pt")
     output_dir = st.sidebar.text_input("结果输出目录", value="消除路人/结果集")
-    llm_base_url = st.sidebar.text_input("大模型接口地址", value="http://localhost:11434/v1")
+    llm_base_url = st.sidebar.text_input("大模型接口地址", value="https://dashscope.aliyuncs.com/compatible-mode/v1")
     llm_model = st.sidebar.text_input("大模型名称", value="gpt-4o-mini")
     llm_api_key = st.sidebar.text_input("大模型 API Key", value="", type="password")
     llm_request_mode = st.sidebar.selectbox("请求模式", options=["auto", "vision", "text"], index=0)
