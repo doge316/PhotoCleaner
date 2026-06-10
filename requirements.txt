@@ -1,12 +1,13 @@
 # PhotoCleaner 依赖清单
-# opencv-python 必须 >= 4.6（FaceDetectorYN 从该版本起内置）
-# torch 由 ultralytics 间接管理，版本请保持兼容
+# 安装: pip install -r requirements.txt
 
 numpy>=1.24
 opencv-python>=4.6
+opencv-contrib-python>=4.6
 pillow>=9.0
 streamlit>=1.30
 ultralytics>=8.0
 simple-lama-inpainting>=0.1.5
-mediapipe>=0.10
-
+mediapipe>=0.10.30
+torch>=2.0
+torchvision>=0.15

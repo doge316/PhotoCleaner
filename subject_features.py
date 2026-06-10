@@ -55,8 +55,7 @@ def get_model_dir() -> Path:
 
 def _load_midas_model():
     """
-    加载 MiDaS v3.1 Small 深度模型。
-    优先纯离线加载（hub 缓存 + 本地权重），失败再走 torch.hub 远程。
+    加载 MiDaS v3.1 Small 深度模型（纯离线，使用 vendored 源码 + 本地权重）。
     返回 (model, transform) 二元组。
     失败返回 (None, None)，调用方需做降级。
     """
@@ -64,6 +63,12 @@ def _load_midas_model():
         import torch
     except ImportError:
         print("[depth] torch 未安装，跳过深度估算。")
+        return None, None
+
+    local_weight_path = get_model_dir() / _MIDAS_MODEL_FILENAME
+    if not local_weight_path.exists():
+        print(f"[depth] 未找到 MiDaS 权重: {local_weight_path}，跳过深度估算。")
+        print("[depth] 请运行 python setup_models.py 下载模型文件。")
         return None, None
 
     from torchvision.transforms import Compose, Resize, ToTensor, Normalize
@@ -74,58 +79,44 @@ def _load_midas_model():
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    local_weight_path = get_model_dir() / _MIDAS_MODEL_FILENAME
-    hub_dir = torch.hub.get_dir()
-    midas_hub_cache = Path(hub_dir) / "intel-isl_MiDaS_master"
-
-    # ── 路径 A：hub 缓存 + 本地权重 → 纯离线，0 网络 ──
-    if midas_hub_cache.exists() and local_weight_path.exists():
-        print(f"[depth] 纯离线加载 MiDaS (hub: {midas_hub_cache})……")
-        try:
-            # 直接加载本地权重，手动构建模型，不触发任何网络请求
-            state = torch.load(
-                str(local_weight_path), map_location="cpu", weights_only=True
-            )
-
-            # 用 torch.hub.load 加载模型架构（skip_validation=True 跳过 git 校验，
-            # 配合已有 hub 缓存实现纯离线）
-            model = torch.hub.load(
-                "intel-isl/MiDaS", "MiDaS_small",
-                pretrained=False,          # 不下载权重，我们手动加载
-                trust_repo=True,
-                skip_validation=True,      # 关键：跳过 git fetch，纯本地
-                source="github",
-            )
-            model.load_state_dict(state)
-            model.eval()
-            model = model.to("cpu")
-            for p in model.parameters():
-                p.requires_grad = False
-
-            print("[depth] MiDaS 模型加载完成（CPU 模式，纯离线）。")
-            return model, transform
-        except Exception as exc:
-            print(f"[depth] 纯离线加载失败 ({type(exc).__name__}: {exc})，尝试远程……")
-
-    # ── 路径 B：远程下载（首次使用或离线加载失败时） ──
-    print("[depth] 尝试 torch.hub 远程加载 MiDaS……")
     try:
-        model = torch.hub.load(
-            "intel-isl/MiDaS", "MiDaS_small",
-            pretrained=True,
-            trust_repo=True,
-            skip_validation=True,
-            source="github",
+        # 让 geffnet 能从本地 models/ 目录加载 efficientnet 骨架权重
+        # geffnet 内部调用 torch.hub.load_state_dict_from_url(url)，
+        # torch 会检查 {TORCH_HOME}/checkpoints/{filename}，命中则纯本地不联网
+        _project_root = Path(__file__).resolve().parent
+        os.environ.setdefault("TORCH_HOME", str(_project_root / "models"))
+
+        # 从 vendored 源码导入（不依赖 ~/.cache/torch/hub）
+        import sys
+        _vendor_root = str(_project_root / "vendor")
+        if _vendor_root not in sys.path:
+            sys.path.insert(0, _vendor_root)
+
+        from midas.midas_net_custom import MidasNet_small
+
+        print("[depth] 从本地权重加载 MiDaS……")
+        state = torch.load(str(local_weight_path), map_location="cpu",
+                           weights_only=True)
+
+        model = MidasNet_small(
+            str(local_weight_path),
+            features=64,
+            backbone="efficientnet_lite3",
+            exportable=True,
+            non_negative=True,
+            blocks={"expand": True},
         )
+
         model.eval()
         model = model.to("cpu")
         for p in model.parameters():
             p.requires_grad = False
 
-        print("[depth] MiDaS 模型加载完成（CPU 模式）。")
+        print("[depth] MiDaS 模型加载完成（纯离线，vendored 源码）。")
         return model, transform
     except Exception as exc:
-        print(f"[depth] MiDaS 加载失败，将跳过深度特征: {type(exc).__name__}: {exc}")
+        print(f"[depth] MiDaS 加载失败: {type(exc).__name__}: {exc}")
+        print("[depth] 将跳过深度特征。")
         return None, None
 
 

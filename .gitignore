@@ -14,3 +14,9 @@ __pycache__/
 *.sqlite3
 *.log
 .DS_Store
+
+# 模型权重文件（体积大，通过 setup_models.py 下载）
+models/*.pt
+models/*.pth
+models/checkpoints/
+yolov8s-seg.pt

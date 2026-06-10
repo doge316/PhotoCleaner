@@ -81,6 +81,9 @@ def build_union_mask(masks: np.ndarray, indices: np.ndarray) -> np.ndarray:
 
 @lru_cache(maxsize=1)
 def load_lama_model():
+    # 指向本地模型文件，避免 simple_lama_inpainting 尝试从 GitHub 下载
+    _models_dir = Path(__file__).resolve().parent / "models"
+    os.environ.setdefault("LAMA_MODEL", str(_models_dir / "big-lama.pt"))
     try:
         simple_lama_module = import_module("simple_lama_inpainting")
     except ImportError as exc:
@@ -203,7 +206,7 @@ def composite_subjects_back(
 
 
 @lru_cache(maxsize=1)
-def load_model(model_path: str = "yolov8s-seg.pt") -> YOLO:
+def load_model(model_path: str = "models/yolov8s-seg.pt") -> YOLO:
     return YOLO(model_path)
 
 

@@ -188,7 +188,7 @@ def render_hero() -> None:
 
 def sidebar_settings() -> dict[str, object]:
     st.sidebar.markdown("### 处理参数")
-    model_path = st.sidebar.text_input("模型路径", value="yolov8s-seg.pt")
+    model_path = st.sidebar.text_input("模型路径", value="models/yolov8s-seg.pt")
     output_dir = st.sidebar.text_input("结果输出目录", value="消除路人/结果集")
     llm_base_url = st.sidebar.text_input("图像编辑 API 地址", value="https://dashscope.aliyuncs.com")
     llm_model = st.sidebar.text_input("图像编辑模型", value="qwen-image-edit")
