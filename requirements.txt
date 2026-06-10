@@ -1,5 +1,5 @@
-# PhotoCleaner 依赖清单
-# 安装: pip install -r requirements.txt
+# PhotoCleaner dependencies
+# Install: pip install -r requirements.txt
 
 numpy>=1.24
 opencv-python>=4.6
