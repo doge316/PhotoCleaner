@@ -15,6 +15,7 @@ subject_features.py
 from __future__ import annotations
 
 import urllib.request
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -55,54 +56,75 @@ def get_model_dir() -> Path:
 def _load_midas_model():
     """
     加载 MiDaS v3.1 Small 深度模型。
-    优先使用本地缓存；若本地没有再走 torch.hub（首次会自动下载）。
+    优先纯离线加载（hub 缓存 + 本地权重），失败再走 torch.hub 远程。
     返回 (model, transform) 二元组。
     失败返回 (None, None)，调用方需做降级。
     """
     try:
         import torch
     except ImportError:
-        # 注释：没有 torch（比如极简环境），直接返回 None，调用方走降级
         print("[depth] torch 未安装，跳过深度估算。")
         return None, None
 
-    local_path = get_model_dir() / _MIDAS_MODEL_FILENAME
-    try:
-        if local_path.exists():
-            # 注释：本地权重存在 → 直接用本地，避免重复下载
-            model = torch.hub.load(
-                "intel-isl/MiDaS",
-                "MiDaS_small",
-                weights=str(local_path),
-                trust_repo=True,    # 注释：必须给，否则新版 torch 会拦截非官方仓库
-                skip_validation=True,
+    from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+
+    transform = Compose([
+        Resize((256, 256)),
+        ToTensor(),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    local_weight_path = get_model_dir() / _MIDAS_MODEL_FILENAME
+    hub_dir = torch.hub.get_dir()
+    midas_hub_cache = Path(hub_dir) / "intel-isl_MiDaS_master"
+
+    # ── 路径 A：hub 缓存 + 本地权重 → 纯离线，0 网络 ──
+    if midas_hub_cache.exists() and local_weight_path.exists():
+        print(f"[depth] 纯离线加载 MiDaS (hub: {midas_hub_cache})……")
+        try:
+            # 直接加载本地权重，手动构建模型，不触发任何网络请求
+            state = torch.load(
+                str(local_weight_path), map_location="cpu", weights_only=True
             )
-        else:
-            # 注释：没有本地权重 → 让 torch.hub 走下载（首次约 25MB）
-            print("[depth] 本地未发现 MiDaS 权重，尝试 torch.hub 下载……")
+
+            # 用 torch.hub.load 加载模型架构（skip_validation=True 跳过 git 校验，
+            # 配合已有 hub 缓存实现纯离线）
             model = torch.hub.load(
-                "intel-isl/MiDaS",
-                "MiDaS_small",
+                "intel-isl/MiDaS", "MiDaS_small",
+                pretrained=False,          # 不下载权重，我们手动加载
                 trust_repo=True,
-                skip_validation=True,
+                skip_validation=True,      # 关键：跳过 git fetch，纯本地
+                source="github",
             )
+            model.load_state_dict(state)
+            model.eval()
+            model = model.to("cpu")
+            for p in model.parameters():
+                p.requires_grad = False
+
+            print("[depth] MiDaS 模型加载完成（CPU 模式，纯离线）。")
+            return model, transform
+        except Exception as exc:
+            print(f"[depth] 纯离线加载失败 ({type(exc).__name__}: {exc})，尝试远程……")
+
+    # ── 路径 B：远程下载（首次使用或离线加载失败时） ──
+    print("[depth] 尝试 torch.hub 远程加载 MiDaS……")
+    try:
+        model = torch.hub.load(
+            "intel-isl/MiDaS", "MiDaS_small",
+            pretrained=True,
+            trust_repo=True,
+            skip_validation=True,
+            source="github",
+        )
         model.eval()
-        model = model.to("cpu")    # 注释：项目整体强制 CPU，保持一致
+        model = model.to("cpu")
         for p in model.parameters():
-            p.requires_grad = False  # 注释：推理时关梯度，省内存
+            p.requires_grad = False
 
-        # 注释：MiDaS 的预处理：resize 到 256x256 + ImageNet 归一化
-        from torchvision.transforms import Compose, Resize, ToTensor, Normalize
-
-        transform = Compose([
-            Resize((256, 256)),
-            ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
         print("[depth] MiDaS 模型加载完成（CPU 模式）。")
         return model, transform
     except Exception as exc:
-        # 注释：网络/版本不兼容都走这里，整体流程不能崩
         print(f"[depth] MiDaS 加载失败，将跳过深度特征: {type(exc).__name__}: {exc}")
         return None, None
 
@@ -203,6 +225,28 @@ def _load_face_detector():
     使用 mediapipe Tasks API（适用于 mediapipe >= 0.10.30）加载人脸检测器。
     失败返回 None。
     """
+    # WSL/Docker 补丁：注入项目 lib/ 和 ~/.local/lib 到库搜索路径
+    # 注意：需要同时用 ctypes 预加载，因为 os.environ 修改对当前进程的动态链接器不一定生效
+    _project_lib = str(Path(__file__).resolve().parent / "lib")
+    _lib_dirs = []
+    if os.path.isdir(_project_lib):
+        _lib_dirs.append(_project_lib)
+    _local_lib = os.path.expanduser("~/.local/lib")
+    if os.path.isdir(_local_lib):
+        _lib_dirs.append(_local_lib)
+    if _lib_dirs and "LD_LIBRARY_PATH" not in os.environ.get("_GLES_FIXED", ""):
+        # 预加载 libGLESv2，避免 mediapipe import 时找不到
+        for _d in _lib_dirs:
+            _gles = os.path.join(_d, "libGLESv2.so.2")
+            if os.path.isfile(_gles):
+                try:
+                    import ctypes
+                    ctypes.CDLL(_gles, mode=ctypes.RTLD_GLOBAL)
+                except Exception:
+                    pass
+        os.environ["LD_LIBRARY_PATH"] = ":".join(_lib_dirs) + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+        os.environ["_GLES_FIXED"] = "1"
+
     try:
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
@@ -216,10 +260,12 @@ def _load_face_detector():
         return None
 
     try:
-         # 注释：直接读成字节传给 mediapipe，避开 Windows 中文路径的 C++ 兼容问题
         with open(model_path, "rb") as f:
             model_bytes = f.read()
-        base_options = mp_python.BaseOptions(model_asset_buffer=model_bytes)
+        base_options = mp_python.BaseOptions(
+            model_asset_buffer=model_bytes,
+            delegate=mp_python.BaseOptions.Delegate.CPU,
+        )
         options = mp_vision.FaceDetectorOptions(
             base_options=base_options,
             min_detection_confidence=0.5,

@@ -8,7 +8,9 @@ import numpy as np
 import streamlit as st
 
 from db import get_failed_records, get_recent_records, get_success_records, init_db
-from photo_cleaner_core import LLMSelectionConfig, collect_images, format_detection_lines, process_image
+from photo_cleaner_core import format_detection_lines, collect_images
+from llm_subject_selector import LLMSelectionConfig
+from photo_cleaner_qwen import process_image_qwen as process_image, process_batch_qwen as process_batch
 
 
 st.set_page_config(
@@ -188,9 +190,9 @@ def sidebar_settings() -> dict[str, object]:
     st.sidebar.markdown("### 处理参数")
     model_path = st.sidebar.text_input("模型路径", value="yolov8s-seg.pt")
     output_dir = st.sidebar.text_input("结果输出目录", value="消除路人/结果集")
-    llm_base_url = st.sidebar.text_input("大模型接口地址", value="http://localhost:11434/v1")
-    llm_model = st.sidebar.text_input("大模型名称", value="gpt-4o-mini")
-    llm_api_key = st.sidebar.text_input("大模型 API Key", value="", type="password")
+    llm_base_url = st.sidebar.text_input("图像编辑 API 地址", value="https://dashscope.aliyuncs.com")
+    llm_model = st.sidebar.text_input("图像编辑模型", value="qwen-image-edit")
+    llm_api_key = st.sidebar.text_input("API Key", value="", type="password")
     save_masks = st.sidebar.checkbox("同时保存 mask", value=True)
 
     # 注释：新增的多维度特征开关
@@ -207,6 +209,28 @@ def sidebar_settings() -> dict[str, object]:
     )
     st.sidebar.caption("开启后，规则判断将同时考虑：位置/面积、深度、脸部完整度、人物完整度、置信度。")
 
+    st.sidebar.markdown("### 轮廓精修")
+    enable_sam = st.sidebar.checkbox(
+        "启用 SAM 高精度 mask（推荐）",
+        value=True,
+        help="用 SAM 替换 YOLOv8-seg 原生 mask，边界贴合精准得多。首次使用会下载 ~38MB 模型（MobileSAM），CPU 上处理较慢。",
+    )
+    sam_model = st.sidebar.text_input(
+        "SAM 模型名称",
+        value="mobile_sam.pt",
+        help="mobile_sam.pt（推荐，~38MB）/ sam2_t.pt（SAM 2 tiny）/ FastSAM-s.pt（最快）",
+    ) if enable_sam else "mobile_sam.pt"
+    enable_grabcut_refine = st.sidebar.checkbox(
+        "启用 GrabCut 轮廓精化（实验性）",
+        value=False,
+        help="对主体 mask 边缘做 GrabCut 精细化。已开 SAM 则一般不需要。可能不稳定，遇到人物消失请关闭。",
+    )
+    enable_llm_refine = st.sidebar.checkbox(
+        "启用 LLM 轮廓精修（实验性）",
+        value=False,
+        help="把抠出的主体人物发给 Qwen API 做边缘精修。每次处理都会调用 API，费钱且慢。",
+    )
+
     return {
         "model_path": model_path,
         "output_dir": output_dir,
@@ -216,6 +240,10 @@ def sidebar_settings() -> dict[str, object]:
             api_key=llm_api_key,
             enable_depth=enable_depth,
             enable_face=enable_face,
+            enable_grabcut_refine=enable_grabcut_refine,
+            enable_llm_refine=enable_llm_refine,
+            enable_sam=enable_sam,
+            sam_model=sam_model,
         ),
         "save_masks": save_masks,
     }
@@ -225,10 +253,10 @@ def show_result(result, saved_paths: dict[str, Path]) -> None:
     col1, col2 = st.columns(2, gap="large")
     with col1:
         st.markdown("#### 原图")
-        st.image(bgr_to_rgb(result.original_bgr), use_container_width=True)
+        st.image(bgr_to_rgb(result.original_bgr), width="stretch")
     with col2:
         st.markdown("#### 处理后")
-        st.image(bgr_to_rgb(result.cleaned_bgr), use_container_width=True)
+        st.image(bgr_to_rgb(result.cleaned_bgr), width="stretch")
 
     metrics = st.columns(4)
     metrics[0].metric("主体数量", result.subject_count)
@@ -256,7 +284,7 @@ def show_result(result, saved_paths: dict[str, Path]) -> None:
         data=image_to_bytes(result.cleaned_bgr),
         file_name=Path(saved_paths["output"]).name,
         mime="image/png",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -268,12 +296,12 @@ def handle_single_mode(settings: dict[str, object]) -> None:
 
     left, right = st.columns([1.15, 0.85], gap="large")
     with left:
-        st.image(uploaded_file, caption="待处理图片", use_container_width=True)
+        st.image(uploaded_file, caption="待处理图片", width="stretch")
 
     with right:
         st.markdown("#### 处理说明")
         st.write("系统会自动识别人物实例，按主体规则筛选需要保留的人物，再对路人区域进行修复。")
-        start_button = st.button("开始处理单张图片", use_container_width=True)
+        start_button = st.button("开始处理单张图片", width="stretch")
 
     if not start_button:
         return
@@ -326,12 +354,12 @@ def handle_batch_mode(settings: dict[str, object]) -> None:
                 candidates.append(temp_path)
 
             st.write(f"待处理图片数量: {len(candidates)}")
-            if st.button("开始批量处理", use_container_width=True):
+            if st.button("开始批量处理", width="stretch"):
                 run_batch(candidates, settings)
         return
 
     st.write(f"待处理图片数量: {len(candidates)}")
-    if st.button("开始批量处理", use_container_width=True):
+    if st.button("开始批量处理", width="stretch"):
         run_batch(candidates, settings)
 
 
@@ -377,7 +405,7 @@ def render_history_tab() -> None:
 
     st.markdown("#### 最近记录")
     if recent_records:
-        st.dataframe(recent_records, use_container_width=True, hide_index=True)
+        st.dataframe(recent_records, width="stretch", hide_index=True)
     else:
         st.info("暂无处理记录。")
 
@@ -385,14 +413,14 @@ def render_history_tab() -> None:
     with col1:
         st.markdown("#### 成功记录")
         if success_records:
-            st.dataframe(success_records, use_container_width=True, hide_index=True)
+            st.dataframe(success_records, width="stretch", hide_index=True)
         else:
             st.info("暂无成功记录。")
 
     with col2:
         st.markdown("#### 失败记录")
         if failed_records:
-            st.dataframe(failed_records, use_container_width=True, hide_index=True)
+            st.dataframe(failed_records, width="stretch", hide_index=True)
         else:
             st.info("暂无失败记录。")
 
