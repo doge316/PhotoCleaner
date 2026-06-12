@@ -15,7 +15,6 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
 from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
@@ -44,8 +43,6 @@ def _patched_jit_load(*args, **kwargs):
 
 torch.jit.load = _patched_jit_load
 
-from ultralytics import YOLO
-
 from db import init_db, insert_record
 from llm_subject_selector import (
     LLMSelectionConfig,
@@ -55,7 +52,6 @@ from llm_subject_selector import (
 
 # 复用 photo_cleaner_core 的数据结构和工具函数
 from photo_cleaner_core import (
-    SUPPORTED_EXTENSIONS,
     DetectionSummary,
     ProcessResult,
     build_union_mask,
@@ -63,7 +59,6 @@ from photo_cleaner_core import (
     format_detection_lines,
     is_supported_image,
     load_model,
-    load_sam_model,
     generate_sam_masks,
     refine_sam_masks_adaptive,
     save_result,
@@ -574,7 +569,6 @@ def refine_subject_with_llm(
         return None
 
     # 2) 编码为 PNG data URL（保留 alpha 通道）
-    import base64
     success, buffer = cv2.imencode(".png", subject_bgra)
     if not success:
         return None
@@ -629,10 +623,6 @@ def _call_dashscope_for_refine(subject_data_url: str, config: LLMSelectionConfig
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
 
-    import json
-    from urllib import error as urllib_error
-    from urllib import request as urllib_request
-
     req = urllib_request.Request(
         url=DASHSCOPE_IMAGE_EDIT_ENDPOINT,
         data=json.dumps(payload).encode("utf-8"),
@@ -675,10 +665,6 @@ def _call_openai_compatible_for_refine(subject_data_url: str, config: LLMSelecti
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
-
-    import json
-    from urllib import error as urllib_error
-    from urllib import request as urllib_request
 
     req = urllib_request.Request(
         url=url, data=json.dumps(payload).encode("utf-8"),

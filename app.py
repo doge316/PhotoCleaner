@@ -10,7 +10,7 @@ import streamlit as st
 from db import get_failed_records, get_recent_records, get_success_records, init_db
 from photo_cleaner_core import format_detection_lines, collect_images
 from llm_subject_selector import LLMSelectionConfig
-from photo_cleaner_qwen import process_image_qwen as process_image, process_batch_qwen as process_batch
+from photo_cleaner_qwen import process_image_qwen as process_image
 
 
 st.set_page_config(
@@ -220,16 +220,6 @@ def sidebar_settings() -> dict[str, object]:
         value="mobile_sam.pt",
         help="mobile_sam.pt（推荐，~38MB）/ sam2_t.pt（SAM 2 tiny）/ FastSAM-s.pt（最快）",
     ) if enable_sam else "mobile_sam.pt"
-    enable_grabcut_refine = st.sidebar.checkbox(
-        "启用 GrabCut 轮廓精化（实验性）",
-        value=False,
-        help="对主体 mask 边缘做 GrabCut 精细化。已开 SAM 则一般不需要。可能不稳定，遇到人物消失请关闭。",
-    )
-    enable_llm_refine = st.sidebar.checkbox(
-        "启用 LLM 轮廓精修（实验性）",
-        value=False,
-        help="把抠出的主体人物发给 Qwen API 做边缘精修。每次处理都会调用 API，费钱且慢。",
-    )
 
     return {
         "model_path": model_path,
@@ -240,8 +230,6 @@ def sidebar_settings() -> dict[str, object]:
             api_key=llm_api_key,
             enable_depth=enable_depth,
             enable_face=enable_face,
-            enable_grabcut_refine=enable_grabcut_refine,
-            enable_llm_refine=enable_llm_refine,
             enable_sam=enable_sam,
             sam_model=sam_model,
         ),
