@@ -24,6 +24,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from device_utils import get_device
 
 # ---------------------------------------------------------------------------
 # 配置与全局状态
@@ -55,21 +56,22 @@ def get_model_dir() -> Path:
 
 def _load_midas_model():
     """
-    加载 MiDaS v3.1 Small 深度模型（纯离线，使用 vendored 源码 + 本地权重）。
-    返回 (model, transform) 二元组。
-    失败返回 (None, None)，调用方需做降级。
+    加载 MiDaS v3.1 Small 深度模型（vendored 源码 + 本地权重）。
+    返回 (model, transform, device) 三元组。
+    失败返回 (None, None, cpu)。
     """
+    device = get_device()
     try:
         import torch
     except ImportError:
         print("[depth] torch 未安装，跳过深度估算。")
-        return None, None
+        return None, None, device
 
     local_weight_path = get_model_dir() / _MIDAS_MODEL_FILENAME
     if not local_weight_path.exists():
         print(f"[depth] 未找到 MiDaS 权重: {local_weight_path}，跳过深度估算。")
         print("[depth] 请运行 python setup_models.py 下载模型文件。")
-        return None, None
+        return None, None, device
 
     from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 
@@ -80,13 +82,9 @@ def _load_midas_model():
     ])
 
     try:
-        # 让 geffnet 能从本地 models/ 目录加载 efficientnet 骨架权重
-        # geffnet 内部调用 torch.hub.load_state_dict_from_url(url)，
-        # torch 会检查 {TORCH_HOME}/checkpoints/{filename}，命中则纯本地不联网
         _project_root = Path(__file__).resolve().parent
         os.environ.setdefault("TORCH_HOME", str(_project_root / "models"))
 
-        # 从 vendored 源码导入（不依赖 ~/.cache/torch/hub）
         import sys
         _vendor_root = str(_project_root / "vendor")
         if _vendor_root not in sys.path:
@@ -94,8 +92,8 @@ def _load_midas_model():
 
         from midas.midas_net_custom import MidasNet_small
 
-        print("[depth] 从本地权重加载 MiDaS……")
-        state = torch.load(str(local_weight_path), map_location="cpu",
+        print(f"[depth] 从本地权重加载 MiDaS 到 {device}……")
+        state = torch.load(str(local_weight_path), map_location=str(device),
                            weights_only=True)
 
         model = MidasNet_small(
@@ -108,16 +106,16 @@ def _load_midas_model():
         )
 
         model.eval()
-        model = model.to("cpu")
+        model = model.to(device)
         for p in model.parameters():
             p.requires_grad = False
 
-        print("[depth] MiDaS 模型加载完成（纯离线，vendored 源码）。")
-        return model, transform
+        print(f"[depth] MiDaS 模型加载完成（{device}，vendored 源码）。")
+        return model, transform, device
     except Exception as exc:
         print(f"[depth] MiDaS 加载失败: {type(exc).__name__}: {exc}")
         print("[depth] 将跳过深度特征。")
-        return None, None
+        return None, None, device
 
 
 @lru_cache(maxsize=1)
@@ -131,7 +129,7 @@ def compute_depth_map(image_bgr: np.ndarray) -> Optional[np.ndarray]:
     计算整张图像的深度图（disparity，越大表示离镜头越近）。
     返回与原图同尺寸的 float32 数组，缺失时返回 None。
     """
-    model, transform = get_midas()
+    model, transform, device = get_midas()
     if model is None or transform is None:
         return None
     try:
@@ -140,7 +138,7 @@ def compute_depth_map(image_bgr: np.ndarray) -> Optional[np.ndarray]:
 
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(image_rgb)
-        input_tensor = transform(image_pil).unsqueeze(0)  # (1, 3, 256, 256)
+        input_tensor = transform(image_pil).unsqueeze(0).to(device)  # (1, 3, 256, 256)
 
         with torch.no_grad():
             prediction = model(input_tensor)

@@ -9,11 +9,13 @@ try:
 except ImportError:
     from torch.utils.model_zoo import load_url as load_state_dict_from_url
 
+from device_utils import get_device
+
 
 def load_checkpoint(model, checkpoint_path):
     if checkpoint_path and os.path.isfile(checkpoint_path):
         print("=> Loading checkpoint '{}'".format(checkpoint_path))
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location=get_device())
         if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
             new_state_dict = OrderedDict()
             for k, v in checkpoint['state_dict'].items():
@@ -36,7 +38,7 @@ def load_pretrained(model, url, filter_fn=None, strict=True):
         print("=> Warning: Pretrained model URL is empty, using random initialization.")
         return
 
-    state_dict = load_state_dict_from_url(url, progress=False, map_location='cpu')
+    state_dict = load_state_dict_from_url(url, progress=False, map_location=get_device())
 
     input_conv = 'conv_stem'
     classifier = 'classifier'

@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-# 强制使用 CPU，必须在导入 torch 相关库之前设置
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 import time
 from importlib import import_module
 from dataclasses import dataclass
@@ -15,15 +11,20 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# 在导入 ultralytics 之前，先强制 torch 使用 CPU
 import torch
-torch.cuda.is_available = lambda: False  # 强制覆盖，让所有 GPU 检查返回 False
 
-# 补丁 torch.jit.load，强制使用 CPU
+# 补丁 torch.jit.load，让权重加载到当前选定的设备（CUDA 若可用，否则 CPU）
+from device_utils import get_device
+
 _original_jit_load = torch.jit.load
+_device_for_jit = get_device()
+
+
 def _patched_jit_load(*args, **kwargs):
-    kwargs.setdefault('map_location', 'cpu')
+    kwargs.setdefault("map_location", str(_device_for_jit))
     return _original_jit_load(*args, **kwargs)
+
+
 torch.jit.load = _patched_jit_load
 
 from ultralytics import YOLO
@@ -91,7 +92,7 @@ def load_lama_model():
             "LaMa 后端不可用，请先安装 simple-lama-inpainting"
         ) from exc
 
-    return simple_lama_module.SimpleLama()
+    return simple_lama_module.SimpleLama(device=get_device())
 
 
 def remove_stray_people_lama(image_bgr: np.ndarray, stray_mask: np.ndarray) -> np.ndarray:
@@ -243,10 +244,10 @@ def load_sam_model(model_name: str = "mobile_sam.pt"):
         else:
             model_path = model_name
 
-        print(f"[sam] 正在加载 {model_name} 到 CPU……")
+        print(f"[sam] 正在加载 {model_name} 到 {get_device()}……")
         model = SAM(model_path)
-        # 强制 CPU
-        model.to("cpu")
+        # 使用自动检测到的设备（CUDA 若可用）
+        model.to(get_device())
         print(f"[sam] {model_name} 加载完成。")
         return model
     except Exception as exc:

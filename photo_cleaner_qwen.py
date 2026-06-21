@@ -26,18 +26,17 @@ import cv2
 import numpy as np
 from PIL import Image
 
-# 强制 CPU 模式
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 import torch
 
-torch.cuda.is_available = lambda: False
+# 补丁 torch.jit.load，让权重加载到当前选定的设备（CUDA 若可用，否则 CPU）
+from device_utils import get_device
 
 _original_jit_load = torch.jit.load
+_device_for_jit = get_device()
 
 
 def _patched_jit_load(*args, **kwargs):
-    kwargs.setdefault("map_location", "cpu")
+    kwargs.setdefault("map_location", str(_device_for_jit))
     return _original_jit_load(*args, **kwargs)
 
 
@@ -105,7 +104,7 @@ def _load_lama_model():
         raise ImportError(
             "LaMa 后端不可用，请先安装 simple-lama-inpainting"
         ) from exc
-    return simple_lama_module.SimpleLama()
+    return simple_lama_module.SimpleLama(device=get_device())
 
 
 def _lama_inpaint(image_bgr: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
